@@ -351,13 +351,18 @@ fun MainScreen(
                     exit = androidx.compose.animation.fadeOut(),
                     modifier = Modifier.align(Alignment.Center)
                 ) {
-                    PlayerPlayPauseButton(
-                        playing = playing,
+                    IconButton(
                         onClick = { viewModel.toggleVideoPlayPause() },
                         modifier = Modifier
                             .focusRequester(playPauseFocusRequester)
                             .onFocusChanged { isPlayPauseFocused = it.hasFocus }
-                    )
+                    ) {
+                        Icon(
+                            imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
                 }
             }
             DpadSeekIndicator(
@@ -1014,7 +1019,7 @@ private fun NowPlayingContent(viewModel: MainViewModel) {
                 PlayerPlayPauseButton(
                     player,
                     modifier = Modifier.size(63.dp).dpadFocus(CircleShape),
-                    iconSize = 40.dp
+                    iconSize = 40
                 )
                 PlayerNextButton(player, modifier = Modifier.dpadFocus())
                 HoldScanButton(
@@ -1230,3 +1235,4 @@ private fun PlayerProgressSlider(
         valueRange = 0f..duration.toFloat()
     )
 }
+
