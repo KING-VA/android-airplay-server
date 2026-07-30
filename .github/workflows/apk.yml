@@ -1,5 +1,8 @@
 name: Generate APK
 
+permissions:
+  contents: write
+
 env:
   main_project_module: app
 
@@ -19,43 +22,66 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Set TAG
-        if: github.event_name == 'push'
+      - name: Set version
+        shell: bash
         run: |
-          echo "version=$(echo '${{ github.ref_name }}' | awk -F 'v' '{print $2}')" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
 
-      - name: Set TAG
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "version=$(echo '${{ inputs.version }}' | awk -F 'v' '{print $2}')" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Use JDK
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
-          distribution: "zulu"
+          distribution: zulu
           java-version: "21"
-          cache: "gradle"
+          cache: gradle
 
-      - name: Build
+      - name: Build release
+        shell: bash
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-          echo ${{ secrets.STORE }} | base64 -d > upload.jks
-          echo ${{ secrets.LOCAL }} | base64 -d > local.properties
-          chmod +x ./gradlew;
-          ./gradlew assembleRelease bundleRelease --stacktrace
-          rm upload.jks local.properties
 
-      - name: Publish (GitHub)
+          echo "${{ secrets.STORE }}" | base64 -d > upload.jks
+          echo "${{ secrets.LOCAL }}" | base64 -d > local.properties
+
+          chmod +x gradlew
+          ./gradlew assembleRelease bundleRelease --stacktrace
+
+          rm -f upload.jks local.properties
+
+      - name: Show generated files
+        run: |
+          find app/build -type f
+
+      - name: Upload APK/AAB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-${{ env.VERSION }}
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: v${{ env.version }}
-          tag_name: v${{ env.version }}
+          name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
           files: |
-            ${{ env.main_project_module }}/build/outputs/apk/release/app-release.apk
-            ${{ env.main_project_module }}/build/outputs/bundle/release/app-release.aab
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
