@@ -32,7 +32,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.jqssun.airplay"
-        minSdk = 24
+        minSdk = 21
         targetSdk = 36
         versionCode = 28
         versionName = "0.0.28"
