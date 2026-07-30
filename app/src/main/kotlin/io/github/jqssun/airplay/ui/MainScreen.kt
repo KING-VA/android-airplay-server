@@ -66,6 +66,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
+/*
 import androidx.media3.ui.compose.material3.MiniController
 import androidx.media3.ui.compose.material3.buttons.NextButton
 import androidx.media3.ui.compose.material3.buttons.PlayPauseButton
@@ -73,6 +74,8 @@ import androidx.media3.ui.compose.material3.buttons.PreviousButton
 import androidx.media3.ui.compose.material3.indicator.DurationText
 import androidx.media3.ui.compose.material3.indicator.PositionText
 import androidx.media3.ui.compose.material3.indicator.ProgressSlider
+*/
+import androidx.media3.common.Player
 import kotlin.math.abs
 import kotlinx.coroutines.delay
 
@@ -348,7 +351,7 @@ fun MainScreen(
                     exit = androidx.compose.animation.fadeOut(),
                     modifier = Modifier.align(Alignment.Center)
                 ) {
-                    PlayPauseButton(
+                    PlayerPlayPauseButton(
                         playing = playing,
                         onClick = { viewModel.toggleVideoPlayPause() },
                         modifier = Modifier
@@ -849,6 +852,7 @@ private fun HoldScanButton(
     }
 }
 
+/*
 @Composable
 @AndroidxOptIn(UnstableApi::class)
 private fun AudioMiniController(viewModel: MainViewModel, visible: Boolean, onClick: () -> Unit) {
@@ -860,6 +864,58 @@ private fun AudioMiniController(viewModel: MainViewModel, visible: Boolean, onCl
         bitmapLoader = remember { DataSourceBitmapLoader(context) },
         onClick = onClick
     )
+}
+*/
+
+@Composable
+@AndroidxOptIn(UnstableApi::class)
+private fun AudioMiniController(
+    viewModel: MainViewModel,
+    visible: Boolean,
+    onClick: () -> Unit
+) {
+    if (!visible) return
+
+    val player = viewModel.dacpPlayer ?: return
+    val track by viewModel.trackInfo.collectAsState()
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+
+            if (track.coverArt != null) {
+                Image(
+                    bitmap = track.coverArt!!.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp)
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f)
+                    .padding(horizontal = 8.dp)
+            ) {
+                Text(
+                    track.title.ifEmpty { "Unknown" },
+                    maxLines = 1
+                )
+
+                Text(
+                    track.artist,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            PlayerPlayPauseButton(player)
+        }
+    }
 }
 
 @Composable
@@ -936,9 +992,9 @@ private fun NowPlayingContent(viewModel: MainViewModel) {
         if (player != null) {
             // BottomControls' default row, minus its video-overlay gradient
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                PositionText(player, Modifier.padding(end = 8.dp))
-                Box(modifier = Modifier.weight(1f)) { ProgressSlider(player) }
-                DurationText(player, Modifier.padding(start = 8.dp))
+                PlayerPositionText(player, Modifier.padding(end = 8.dp))
+                Box(modifier = Modifier.weight(1f)) { PlayerProgressSlider(player) }
+                PlayerDurationText(player, Modifier.padding(start = 8.dp))
             }
 
             Spacer(Modifier.height(8.dp))
@@ -954,13 +1010,13 @@ private fun NowPlayingContent(viewModel: MainViewModel) {
                     onBegin = { viewModel.audioScanBegin(false) },
                     onEnd = { viewModel.audioScanEnd() }
                 )
-                PreviousButton(player, modifier = Modifier.dpadFocus())
-                PlayPauseButton(
+                PlayerPreviousButton(player, modifier = Modifier.dpadFocus())
+                PlayerPlayPauseButton(
                     player,
                     modifier = Modifier.size(63.dp).dpadFocus(CircleShape),
                     iconSize = 40.dp
                 )
-                NextButton(player, modifier = Modifier.dpadFocus())
+                PlayerNextButton(player, modifier = Modifier.dpadFocus())
                 HoldScanButton(
                     icon = Icons.Default.FastForward,
                     contentDescription = stringResource(R.string.cd_fast_forward),
@@ -1039,3 +1095,138 @@ private fun debugOverlaySections(context: Context, info: DebugInfo): List<DebugS
 private fun formatDecode(meanUs: Int, maxUs: Int, held: Int, errors: Int): String =
     (if (meanUs == 0) "held=$held"
     else "%.1f/%.1f ms held=%d".format(meanUs / 1000.0, maxUs / 1000.0, held)) + " errs=$errors"
+
+@Composable
+private fun PlayerPlayPauseButton(
+    player: Player,
+    modifier: Modifier = Modifier,
+    iconSize: Int = 32
+) {
+    var playing by remember { mutableStateOf(player.isPlaying) }
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing = isPlaying
+            }
+        }
+
+        player.addListener(listener)
+
+        onDispose {
+            player.removeListener(listener)
+        }
+    }
+
+    IconButton(
+        onClick = {
+            if (player.isPlaying) player.pause()
+            else player.play()
+        },
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = if (playing)
+                Icons.Default.Pause
+            else
+                Icons.Default.PlayArrow,
+            contentDescription = null,
+            modifier = Modifier.size(iconSize.dp)
+        )
+    }
+}
+
+
+@Composable
+private fun PlayerPreviousButton(
+    player: Player,
+    modifier: Modifier = Modifier
+) {
+    IconButton(
+        onClick = { player.seekToPreviousMediaItem() },
+        modifier = modifier
+    ) {
+        Icon(Icons.Default.SkipPrevious, null)
+    }
+}
+
+
+@Composable
+private fun PlayerNextButton(
+    player: Player,
+    modifier: Modifier = Modifier
+) {
+    IconButton(
+        onClick = { player.seekToNextMediaItem() },
+        modifier = modifier
+    ) {
+        Icon(Icons.Default.SkipNext, null)
+    }
+}
+
+
+@Composable
+private fun PlayerPositionText(
+    player: Player,
+    modifier: Modifier = Modifier
+) {
+    var position by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(player) {
+        while (true) {
+            position = player.currentPosition
+            delay(500)
+        }
+    }
+
+    Text(
+        text = formatVideoTime(position),
+        modifier = modifier
+    )
+}
+
+
+@Composable
+private fun PlayerDurationText(
+    player: Player,
+    modifier: Modifier = Modifier
+) {
+    var duration by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(player) {
+        while (true) {
+            duration = player.duration.coerceAtLeast(0)
+            delay(500)
+        }
+    }
+
+    Text(
+        text = formatVideoTime(duration),
+        modifier = modifier
+    )
+}
+
+
+@Composable
+private fun PlayerProgressSlider(
+    player: Player
+) {
+    var position by remember { mutableLongStateOf(0L) }
+    var duration by remember { mutableLongStateOf(1L) }
+
+    LaunchedEffect(player) {
+        while (true) {
+            position = player.currentPosition
+            duration = player.duration.coerceAtLeast(1)
+            delay(250)
+        }
+    }
+
+    Slider(
+        value = position.toFloat(),
+        onValueChange = {
+            player.seekTo(it.toLong())
+        },
+        valueRange = 0f..duration.toFloat()
+    )
+}
