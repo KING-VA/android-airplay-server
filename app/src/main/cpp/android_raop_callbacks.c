@@ -159,7 +159,7 @@ static void _audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data
     }
     
     if (!ctx->audio_engine || !data->data || data->data_len <= 0) {
-        LOGW("_audio_process: audio_engine=%p data=%p len=%d — skipping decode",
+        LOGI("_audio_process: audio_engine=%p data=%p len=%d — skipping decode",
              (void*)ctx->audio_engine, (void*)data->data, data->data_len);
         return;
     }

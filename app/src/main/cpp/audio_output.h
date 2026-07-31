@@ -166,6 +166,7 @@ private:
         }
         
         // DIAGNOSTIC: Check if fast audio was granted — critical for mirroring latency
+        /*
         const bool aaudio = mStream->getAudioApi() == oboe::AudioApi::AAudio;
         const bool lowLatencyGranted = mStream->getPerformanceMode() == oboe::PerformanceMode::LowLatency;
         if (!lowLatencyGranted) {
@@ -173,6 +174,7 @@ private:
                        static_cast<int>(mStream->getPerformanceMode()),
                        aaudio ? "AAudio" : "OpenSLES");
         }
+        */
         if (mOboeBufferFrames > 0) {
             mStream->setBufferSizeInFrames(mOboeBufferFrames);
         } else if (mLowLatency) {
