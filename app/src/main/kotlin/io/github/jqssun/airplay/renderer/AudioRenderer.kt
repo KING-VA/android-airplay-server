@@ -1,5 +1,5 @@
 package io.github.jqssun.airplay.renderer
-import androidx.core.content.ContextCompat
+
 import android.media.AudioManager
 import android.util.Log
 import io.github.jqssun.airplay.bridge.NativeBridge
@@ -47,17 +47,6 @@ class AudioRenderer {
             _lastStartResult = false
             return false
         }
-        
-        // DIAGNOSTIC: Check audio manager properties before starting
-        val am = android.content.ContextCompat.getSystemService(
-            android.app.Application() ?: throw IllegalStateException("Application context required"),
-            android.media.AudioManager::class.java
-        )
-        
-        val actualRate = am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
-        val actualBurst = am?.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: 0
-        
-        Log.i(TAG, "start() called: serverHandle=$serverHandle, deviceSampleRate=$actualRate, burstSize=$actualBurst")
         
         // Check if we're on a device that likely has HDMI/audio output available
         val isFireTv = android.os.Build.MANUFACTURER.lowercase().contains("amazon")
@@ -129,24 +118,6 @@ class AudioRenderer {
     fun setFormat(ct: Int, spf: Int) {
         codecLabel = when (ct) {
             CT_ALAC -> "ALAC"; CT_AAC_LC -> "AAC-LC"; CT_AAC_ELD -> "AAC-ELD"; else -> "?"
-        }
-        
-        // DIAGNOSTIC: Log sample rate mismatch between AirPlay and device
-        val am = android.content.ContextCompat.getSystemService(
-            android.app.Application() ?: throw IllegalStateException("Application context required"),
-            android.media.AudioManager::class.java
-        )
-        val deviceSampleRate = am?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
-        
-        Log.i(TAG, "setFormat(): airPlayCodec=$codecLabel spf=$spf deviceSampleRate=${deviceSampleRate}Hz")
-        
-        if (deviceSampleRate > 0 && spf > 0) {
-            // AirPlay sends spf=480 which implies 48kHz (spf * 100 = ~48000 for ALAC)
-            // If device is 44100Hz, there will be a resampling mismatch
-            val airplaySampleRate = spf * 100  // approximate
-            if (airplaySampleRate != deviceSampleRate) {
-                Log.w(TAG, "SAMPLE RATE MISMATCH: AirPlay expects ~${airplaySampleRate}Hz but device reports ${deviceSampleRate}Hz")
-            }
         }
         
         if (serverHandle != 0L) NativeBridge.nativeServerAudioFormat(serverHandle, ct, spf)
