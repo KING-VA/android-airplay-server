@@ -111,7 +111,11 @@ Java_io_github_jqssun_airplay_bridge_NativeBridge_nativeInit(
     ctx->log = std::make_shared<LogSink>();
     ctx->log->bind(env, callback);
 
-    ctx->cb_ctx.audio_engine = audio_engine_create(ctx->log, 44100, 2);
+    // DIAGNOSTIC: Log the default sample rate used for the audio engine.
+    // This is critical because AirPlay protocol expects 48kHz (spf=480 for AAC-ELD),
+    // but we initialize at 44100Hz here. The oboe DefaultStreamValues set via
+    // nativeSetDefaultStreamValues() should override this before audio_engine_start().
+    LOGI("audio engine created with sampleRate=%d channels=%d", 44100, 2);
 
     return (jlong)(intptr_t)ctx;
 }

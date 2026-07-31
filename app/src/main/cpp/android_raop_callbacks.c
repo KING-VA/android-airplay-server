@@ -30,6 +30,16 @@ static JNIEnv *_get_env(android_callback_ctx_t *ctx) {
     return env;
 }
 
+// FIX #4: Helper to check shutdown flag before calling any callback.
+// Returns 1 if teardown is in progress (skip callback), 0 if normal operation.
+static int _check_shutdown(android_callback_ctx_t *ctx) {
+    int shutdown = 0;
+    pthread_mutex_lock(&ctx->shutdown_lock);
+    shutdown = ctx->is_shutdown;
+    pthread_mutex_unlock(&ctx->shutdown_lock);
+    return shutdown;
+}
+
 void android_callbacks_init(android_callback_ctx_t *ctx, JNIEnv *env, jobject callback_obj) {
     (*env)->GetJavaVM(env, &ctx->jvm);
     ctx->callback_obj = (*env)->NewGlobalRef(env, callback_obj);
@@ -41,6 +51,11 @@ void android_callbacks_init(android_callback_ctx_t *ctx, JNIEnv *env, jobject ca
 
     pthread_mutex_init(&ctx->playback_info_lock, NULL);
     pthread_cond_init(&ctx->play_ready_cond, NULL);
+    
+    // FIX #4: Initialize shutdown protection
+    pthread_mutex_init(&ctx->shutdown_lock, NULL);
+    ctx->is_shutdown = 0;
+    
     ctx->play_ready = 0;
     ctx->playback_position = 0.0;
     /* -1.0 is the video finished sentinel, reserved for _video_stop */
@@ -71,6 +86,15 @@ void android_callbacks_init(android_callback_ctx_t *ctx, JNIEnv *env, jobject ca
 }
 
 void android_callbacks_destroy(android_callback_ctx_t *ctx, JNIEnv *env) {
+    // FIX #4: Set shutdown flag FIRST to prevent callbacks from firing during teardown.
+    // This is critical — without this, RAOP's internal pthreads may call into
+    // freed memory when the audio engine has been destroyed but the thread still fires.
+    pthread_mutex_lock(&ctx->shutdown_lock);
+    ctx->is_shutdown = 1;
+    pthread_mutex_unlock(&ctx->shutdown_lock);
+    
+    LOGI("android_callbacks_destroy: shutdown flag set — no more callbacks will fire");
+    
     if (ctx->callback_obj) {
         (*env)->DeleteGlobalRef(env, ctx->callback_obj);
         ctx->callback_obj = NULL;
@@ -82,6 +106,7 @@ void android_callbacks_destroy(android_callback_ctx_t *ctx, JNIEnv *env) {
     ctx->registered_count = 0;
     pthread_cond_destroy(&ctx->play_ready_cond);
     pthread_mutex_destroy(&ctx->playback_info_lock);
+    pthread_mutex_destroy(&ctx->shutdown_lock);
 }
 
 void android_callbacks_update_playback_info(android_callback_ctx_t *ctx, double position,
@@ -102,7 +127,50 @@ void android_callbacks_update_playback_info(android_callback_ctx_t *ctx, double 
 
 static void _audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data) {
     android_callback_ctx_t *ctx = (android_callback_ctx_t *)cls;
-    if (!ctx->audio_engine || !data->data || data->data_len <= 0) return;
+    
+    // FIX #4: Check shutdown flag FIRST — if teardown is in progress, skip all processing.
+    // This prevents the crash cascade where RAOP threads continue processing audio data
+    // after the audio engine has been destroyed during graceful degradation.
+    if (_check_shutdown(ctx)) {
+        return;  // Teardown in progress, silently skip
+    }
+    
+    // DIAGNOSTIC: Track thread attachment for crash investigation.
+    // The SIGSEGV on Fire TV is caused by native threads exiting without DetachCurrentThread().
+    JNIEnv *env = NULL;
+    JavaVM *jvm = ctx->jvm;
+    if (!jvm) {
+        LOGE("_audio_process: JavaVM is NULL — audio engine teardown may have occurred");
+        return;
+    }
+    
+    int attachState = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6);
+    if (attachState == JNI_EDETACHED) {
+        LOGI("_audio_process: Thread was DETACHED — attaching now");
+        if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) {
+            LOGE("_audio_process: Failed to attach current thread");
+            return;
+        }
+        // NOTE: We do NOT detach here because this is a long-lived RAOP thread.
+        // Detaching would happen in the thread cleanup path (raop_destroy).
+    } else if (attachState == JNI_EVERSION) {
+        LOGE("_audio_process: JNI version not supported");
+        return;
+    }
+    
+    if (!ctx->audio_engine || !data->data || data->data_len <= 0) {
+        LOGW("_audio_process: audio_engine=%p data=%p len=%d — skipping decode",
+             (void*)ctx->audio_engine, (void*)data->data, data->data_len);
+        return;
+    }
+    
+    // DIAGNOSTIC: Log when audio engine is NULL (indicates audio path failure)
+    if (!ctx->audio_engine) {
+        LOGE("_audio_process: FATAL — audio_engine is NULL but callback still firing! "
+             "This means the engine was destroyed while RAOP still had data to process.");
+        return;
+    }
+    
     audio_engine_decode(ctx->audio_engine, data->data, data->data_len,
                         (int)data->ct, (int64_t)data->ntp_time_local);
 }

@@ -47,6 +47,12 @@ typedef struct {
     pthread_cond_t play_ready_cond;
     int play_ready;
     AudioEngine *audio_engine;
+    
+    /* FIX #4: Shutdown flag to prevent callbacks from firing after teardown.
+     * This prevents the crash cascade where RAOP threads continue processing
+     * audio data after the audio engine has been destroyed. */
+    pthread_mutex_t shutdown_lock;
+    int is_shutdown;  // 1 = teardown in progress or complete, do not call callbacks
 } android_callback_ctx_t;
 
 void android_callbacks_init(android_callback_ctx_t *ctx, JNIEnv *env, jobject callback_obj);

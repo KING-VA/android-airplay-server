@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.provider.Settings
 import android.view.Window
 import android.view.WindowManager
@@ -28,6 +29,23 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+// Compatibility helper: getSystemService(Class) is API 28+.
+// On older APIs use the string-based overload instead.
+@Suppress("DEPRECATION")
+private fun <T> Context.compatGetSystemService(serviceClass: Class<T>): T? {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        @Suppress("UNCHECKED_CAST")
+        getSystemService(serviceClass) as T?
+    } else {
+        val serviceName = when (serviceClass) {
+            AudioManager::class.java -> Context.AUDIO_SERVICE
+            else -> throw IllegalArgumentException("Unsupported service class: $serviceClass")
+        }
+        @Suppress("UNCHECKED_CAST")
+        getSystemService(serviceName) as T?
+    }
+}
 
 // zones: left 35% = back, right 35% = forward, middle = play/pause
 @Stable
@@ -133,7 +151,7 @@ class SeekGestureState(private val viewModel: MainViewModel) {
 
 @Stable
 class VolumeState(private val context: Context) {
-    private val audioManager = context.getSystemService(AudioManager::class.java)
+    private val audioManager = context.compatGetSystemService(AudioManager::class.java)
     private val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
 
     var percentage by mutableIntStateOf(0)

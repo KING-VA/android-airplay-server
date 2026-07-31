@@ -129,6 +129,12 @@ private:
 
     bool openLocked() {  // caller holds mLock
         // see: https://developer.android.com/games/sdk/oboe/low-latency-audio
+        
+        // DIAGNOSTIC: Log the sample rate we're requesting — this is where mismatch crashes occur.
+        // AirPlay sends spf=480 which implies 48kHz, but OpenSLES backend may open at 44.1kHz.
+        mLog->info("openLocked(): requesting sampleRate=%d channels=%d lowLatency=%d",
+                   mSampleRate, mChannels, mLowLatency ? 1 : 0);
+        
         oboe::AudioStreamBuilder b;
         b.setDirection(oboe::Direction::Output)
             ->setSharingMode(oboe::SharingMode::Shared)
@@ -150,6 +156,22 @@ private:
         if (r != oboe::Result::OK) {
             mLog->error("Failed to open Oboe stream: %s", oboe::convertToText(r));
             return false;
+        }
+        
+        // DIAGNOSTIC: Log what we ACTUALLY got — this is where the sample rate mismatch is revealed
+        const int actualRate = mStream->getSampleRate();
+        if (actualRate != mSampleRate) {
+            mLog->warn("SAMPLE RATE MISMATCH: requested %d Hz but device opened at %d Hz",
+                       mSampleRate, actualRate);
+        }
+        
+        // DIAGNOSTIC: Check if fast audio was granted — critical for mirroring latency
+        const bool aaudio = mStream->getAudioApi() == oboe::AudioApi::AAudio;
+        const bool lowLatencyGranted = mStream->getPerformanceMode() == oboe::PerformanceMode::LowLatency;
+        if (!lowLatencyGranted) {
+            mLog->warn("FAST AUDIO DENIED: performanceMode=%d (expected 4=LowLatency), audioApi=%s",
+                       static_cast<int>(mStream->getPerformanceMode()),
+                       aaudio ? "AAudio" : "OpenSLES");
         }
         if (mOboeBufferFrames > 0) {
             mStream->setBufferSizeInFrames(mOboeBufferFrames);

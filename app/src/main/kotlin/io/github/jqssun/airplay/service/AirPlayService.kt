@@ -569,7 +569,62 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
 
     override fun onAudioFormat(ct: Int, spf: Int, usingScreen: Boolean) {
         clearPin()
-        audioRenderer.start()
+        
+        // FIX #1: Force 48kHz sample rate to match AirPlay protocol.
+        // AirPlay sends spf=480 which implies 48kHz (spf * 100 = 48000).
+        // If the device opens at 44.1kHz, resampling causes buffer overflow and audio glitches.
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val deviceSampleRate = am.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 0
+        val burstSize = am.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: 0
+        
+        Log.i(TAG, "onAudioFormat(): ct=$ct spf=$spf screen=$usingScreen")
+        Log.i(TAG, "  deviceSampleRate=${deviceSampleRate}Hz burstSize=$burstSize")
+        
+        // Force 48kHz to match AirPlay protocol (spf=480 → 48kHz)
+        val airplaySampleRate = 48000
+        if (deviceSampleRate != airplaySampleRate) {
+            Log.w(TAG, "DEVICE SAMPLE RATE MISMATCH: device=$deviceSampleRateHz, forcing ${airplaySampleRate}Hz for AirPlay")
+            // Override oboe defaults so the audio engine opens at 48kHz
+            NativeBridge.nativeSetDefaultStreamValues(airplaySampleRate, burstSize)
+        }
+        
+        // FIX #2: Check if audio path is actually available on this device.
+        // Fire TV devices often have no HDMI/audio output hardware — attempting to open
+        // the stream will fail with "Broken pipe" and trigger a crash cascade.
+        val audioPathValid = try {
+            val minBuf = android.media.AudioTrack.getMinBufferSize(
+                airplaySampleRate,
+                android.media.AudioFormat.CHANNEL_OUT_STEREO,
+                android.media.AudioFormat.ENCODING_PCM_16BIT
+            )
+            Log.i(TAG, "  AudioTrack.getMinBufferSize(@48kHz)=$minBuf")
+            minBuf > 0 && minBuf != android.media.AudioTrack.ERROR && minBuf != android.media.AudioTrack.ERROR_BAD_VALUE
+        } catch (e: Exception) {
+            Log.e(TAG, "  AudioTrack.getMinBufferSize threw: ${e.message}")
+            false
+        }
+        
+        // FIX #3: Graceful degradation — if audio path is unavailable, skip audio setup
+        // and continue with video-only playback instead of crashing.
+        if (!audioPathValid) {
+            Log.e(TAG, "AUDIO PATH UNAVAILABLE on this device — skipping audio, continuing video-only")
+            _audioOnly.value = false
+            _mirroringActive.value = true
+            audioRenderer.detachEngine()
+            return
+        }
+        
+        val startResult = audioRenderer.start()
+        Log.i(TAG, "  audioRenderer.start() returned: $startResult (audioPathAvailable=${audioRenderer.isAudioPathAvailable()})")
+        
+        if (!startResult) {
+            Log.e(TAG, "AUDIO START FAILED — falling back to video-only mode")
+            _audioOnly.value = false
+            _mirroringActive.value = true
+            audioRenderer.detachEngine()
+            return
+        }
+        
         audioRenderer.setFormat(ct, spf)
         if (!usingScreen && !_audioOnly.value) {
             // pure music streaming (not screen mirroring audio)
