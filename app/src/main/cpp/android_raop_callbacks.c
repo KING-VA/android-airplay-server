@@ -1,6 +1,15 @@
 /*
  * Implements raop_callbacks_t by forwarding to Java/Kotlin via JNI.
  * All callbacks fire from RAOP's internal pthreads, so we AttachCurrentThread.
+ * 
+ * CRITICAL FIX for SIGSEGV on Amazon Fire TV (Android 5.1):
+ * RAOP library creates internal pthreads that attach to the JVM but never detach.
+ * ART runtime on Android 5.1 strictly checks that all JNI-attached threads call
+ * DetachCurrentThread before exiting. If they don't, the process crashes with:
+ *   "Native thread exited without having called DetachCurrentThread"
+ * 
+ * Solution: Use pthread_key_create with a destructor to automatically detach
+ * any JNI-attached thread when it exits, regardless of how or where it terminates.
  */
 
 #include <stdlib.h>
@@ -15,12 +24,94 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+/* ============================================================================
+ * FIX #5: Automatic JNI Detach via pthread Key Destructor
+ * 
+ * This solves the SIGSEGV crash on Amazon Fire TV (Android 5.1) where native
+ * threads exit without calling DetachCurrentThread. The ART runtime aborts the
+ * process in such cases.
+ * 
+ * Mechanism:
+ * 1. Create a pthread key with a destructor function during initialization
+ * 2. When a thread attaches to JNI, store the JNIEnv in thread-local storage
+ * 3. When the thread exits, the destructor automatically detaches from JNI
+ * 4. This works even if the process is terminating and normal cleanup can't run
+ * ============================================================================ */
+
+static pthread_key_t g_jni_env_key;
+static pthread_once_t g_detach_once_control = PTHREAD_ONCE_INIT;
+static int g_jni_detach_key_initialized = 0;
+
+/* Global JVM reference for use in the destructor.
+ * Set during android_callbacks_init and cleared during android_callbacks_destroy. */
+static JavaVM *g_jvm = NULL;
+
+/* Destructor called automatically when a thread exits.
+ * Detaches the JNI environment if this thread was attached. */
+static void jni_detach_destructor(void *ptr) {
+    JNIEnv *env = (JNIEnv *)ptr;
+    if (env != NULL && g_jvm != NULL) {
+        int status = (*g_jvm)->DetachCurrentThread(g_jvm);
+        if (status == JNI_OK) {
+            LOGI("jni_detach_destructor: Auto-detached native thread (pthread key destructor)");
+        } else {
+            LOGE("jni_detach_destructor: DetachCurrentThread failed with status %d", status);
+        }
+    }
+}
+
+/* pthread_once callback to initialize the thread-local storage key */
+static void init_jni_detach_key(void) {
+    int result = pthread_key_create(&g_jni_env_key, jni_detach_destructor);
+    if (result == 0) {
+        g_jni_detach_key_initialized = 1;
+        LOGI("jni_detach_key: pthread key created successfully for auto-JNI-detach");
+    } else {
+        LOGE("jni_detach_key: Failed to create pthread key: %d", result);
+    }
+}
+
+/* Ensure the JNI detach key is initialized (thread-safe via pthread_once) */
+static void ensure_jni_detach_key_initialized(void) {
+    pthread_once(&g_detach_once_control, init_jni_detach_key);
+}
+
+/* --- JNI Environment Helper ---
+ * Gets a JNIEnv for the current thread, attaching if necessary.
+ * With FIX #5, the JNIEnv is stored in thread-local storage so that
+ * when the thread exits, the destructor automatically detaches. */
 static JNIEnv *_get_env(android_callback_ctx_t *ctx) {
     JNIEnv *env = NULL;
-    int status = (*ctx->jvm)->GetEnv(ctx->jvm, (void **)&env, JNI_VERSION_1_6);
-    if (status == JNI_EDETACHED) {
-        (*ctx->jvm)->AttachCurrentThread(ctx->jvm, &env, NULL);
+    JavaVM *jvm = ctx->jvm;
+    if (!jvm) {
+        return NULL;
     }
+    
+    int status = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        LOGI("_get_env: Thread was DETACHED — attaching now");
+        
+        /* FIX #5: Initialize the pthread key for auto-detach on this thread.
+         * This must be done once per thread, before any AttachCurrentThread call. */
+        ensure_jni_detach_key_initialized();
+        
+        if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) {
+            LOGE("_get_env: Failed to attach current thread");
+            return NULL;
+        }
+        LOGI("_get_env: Successfully attached, storing JNIEnv in TLS for auto-detach");
+        
+        /* FIX #5: Store the JNIEnv in thread-local storage.
+         * When this pthread exits, the jni_detach_destructor will be called
+         * automatically, which will call DetachCurrentThread. */
+        if (g_jni_detach_key_initialized) {
+            pthread_setspecific(g_jni_env_key, (void *)env);
+        }
+    } else if (status == JNI_EVERSION) {
+        LOGE("_get_env: JNI version not supported");
+        return NULL;
+    }
+    
     /* Clear any pending exception from a previous callback on this thread,
        otherwise JNI calls like NewByteArray will fatally abort. */
     if (env && (*env)->ExceptionCheck(env)) {
@@ -42,6 +133,7 @@ static int _check_shutdown(android_callback_ctx_t *ctx) {
 
 void android_callbacks_init(android_callback_ctx_t *ctx, JNIEnv *env, jobject callback_obj) {
     (*env)->GetJavaVM(env, &ctx->jvm);
+    g_jvm = ctx->jvm;  /* FIX #5: Store global JVM reference for auto-detach destructor */
     ctx->callback_obj = (*env)->NewGlobalRef(env, callback_obj);
     ctx->h265_enabled = 1;
     ctx->require_pin = 0;
@@ -95,6 +187,10 @@ void android_callbacks_destroy(android_callback_ctx_t *ctx, JNIEnv *env) {
     
     LOGI("android_callbacks_destroy: shutdown flag set — no more callbacks will fire");
     
+    // FIX #5: Clear global JVM reference to prevent destructor from calling DetachCurrentThread
+    // on a stale JVM pointer after the VM has been destroyed.
+    g_jvm = NULL;
+    
     if (ctx->callback_obj) {
         (*env)->DeleteGlobalRef(env, ctx->callback_obj);
         ctx->callback_obj = NULL;
@@ -135,39 +231,15 @@ static void _audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *data
         return;  // Teardown in progress, silently skip
     }
     
-    // DIAGNOSTIC: Track thread attachment for crash investigation.
-    // The SIGSEGV on Fire TV is caused by native threads exiting without DetachCurrentThread().
-    JNIEnv *env = NULL;
-    JavaVM *jvm = ctx->jvm;
-    if (!jvm) {
-        LOGE("_audio_process: JavaVM is NULL — audio engine teardown may have occurred");
-        return;
-    }
-    
-    int attachState = (*jvm)->GetEnv(jvm, (void **)&env, JNI_VERSION_1_6);
-    if (attachState == JNI_EDETACHED) {
-        LOGI("_audio_process: Thread was DETACHED — attaching now");
-        if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != JNI_OK) {
-            LOGE("_audio_process: Failed to attach current thread");
-            return;
-        }
-        // NOTE: We do NOT detach here because this is a long-lived RAOP thread.
-        // Detaching would happen in the thread cleanup path (raop_destroy).
-    } else if (attachState == JNI_EVERSION) {
-        LOGE("_audio_process: JNI version not supported");
+    JNIEnv *env = _get_env(ctx);
+    if (!env) {
+        LOGE("_audio_process: Failed to get JNI environment — skipping decode");
         return;
     }
     
     if (!ctx->audio_engine || !data->data || data->data_len <= 0) {
         LOGI("_audio_process: audio_engine=%p data=%p len=%d — skipping decode",
              (void*)ctx->audio_engine, (void*)data->data, data->data_len);
-        return;
-    }
-    
-    // DIAGNOSTIC: Log when audio engine is NULL (indicates audio path failure)
-    if (!ctx->audio_engine) {
-        LOGE("_audio_process: FATAL — audio_engine is NULL but callback still firing! "
-             "This means the engine was destroyed while RAOP still had data to process.");
         return;
     }
     
