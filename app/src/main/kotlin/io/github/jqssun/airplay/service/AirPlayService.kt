@@ -583,7 +583,7 @@ class AirPlayService : LifecycleService(), RaopCallbackHandler, LogListener {
         // Force 48kHz to match AirPlay protocol (spf=480 → 48kHz)
         val airplaySampleRate = 48000
         if (deviceSampleRate != airplaySampleRate) {
-            Log.w(TAG, "DEVICE SAMPLE RATE MISMATCH: device=$deviceSampleRateHz, forcing ${airplaySampleRate}Hz for AirPlay")
+            Log.w(TAG, "DEVICE SAMPLE RATE MISMATCH: device=$deviceSampleRate, forcing ${airplaySampleRate}Hz for AirPlay")
             // Override oboe defaults so the audio engine opens at 48kHz
             NativeBridge.nativeSetDefaultStreamValues(airplaySampleRate, burstSize)
         }

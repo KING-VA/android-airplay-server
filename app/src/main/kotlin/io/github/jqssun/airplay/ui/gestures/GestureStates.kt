@@ -152,20 +152,20 @@ class SeekGestureState(private val viewModel: MainViewModel) {
 @Stable
 class VolumeState(private val context: Context) {
     private val audioManager = context.compatGetSystemService(AudioManager::class.java)
-    private val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    private val maxVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
 
     var percentage by mutableIntStateOf(0)
         private set
 
     fun sync() {
-        percentage = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / maxVolume
+        percentage = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / maxVolume
     }
 
     fun update(newPercentage: Int) {
         percentage = newPercentage.coerceIn(0, 100)
         // surface the system panel when a headset is connected
         val flags = if (_isHeadsetOn()) AudioManager.FLAG_SHOW_UI else 0
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, percentage * maxVolume / 100, flags)
+        audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, percentage * maxVolume / 100, flags)
     }
 
     // keeps the indicator in sync with volume-key presses during a gesture
@@ -180,7 +180,7 @@ class VolumeState(private val context: Context) {
     }
 
     private fun _isHeadsetOn(): Boolean =
-        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { device ->
+        audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { device ->
             device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                 device.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
                 device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
